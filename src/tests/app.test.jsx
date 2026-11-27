@@ -272,4 +272,36 @@ describe('PrivacyGuard AI Dashboard & Interactive UI', () => {
     });
     expect(fetchSpy).toHaveBeenCalled();
   });
+
+  it('supports mobile drawer Escape close, Help focus restoration, and aria-live copy feedback', async () => {
+    const writeTextSpy = vi.fn(async () => {});
+    Object.defineProperty(navigator, 'clipboard', {
+      value: { writeText: writeTextSpy },
+      configurable: true,
+    });
+
+    render(<App />);
+
+    // Open mobile sidebar drawer and close with Escape
+    fireEvent.click(screen.getByRole('button', { name: /Open navigation menu/i }));
+    expect(screen.getByRole('dialog', { name: /Primary Sidebar/i })).toBeInTheDocument();
+    fireEvent.keyDown(window, { key: 'Escape' });
+    expect(screen.queryByRole('dialog', { name: /Primary Sidebar/i })).not.toBeInTheDocument();
+
+    // Open Help modal, verify close button gets focus, then restore focus on Escape
+    const helpTrigger = screen.getByRole('button', { name: /Open help guide/i });
+    helpTrigger.focus();
+    fireEvent.click(helpTrigger);
+    const closeBtn = screen.getByRole('button', { name: /Close help dialog/i });
+    await waitFor(() => expect(document.activeElement).toBe(closeBtn));
+    fireEvent.keyDown(window, { key: 'Escape' });
+    await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
+
+    // Copy sanitized output announces via aria-live region
+    fireEvent.click(screen.getByRole('button', { name: /Explore Demo/i }));
+    fireEvent.click(screen.getByRole('button', { name: /Copy Sanitized/i }));
+    await waitFor(() => {
+      expect(screen.getByText('Sanitized output copied to clipboard.', { selector: '.sr-only' })).toBeInTheDocument();
+    });
+  });
 });

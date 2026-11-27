@@ -1,4 +1,5 @@
 import { PII_TYPES } from '../engine/detectPII.js';
+import { REDACTION_MODES } from '../engine/redactPII.js';
 
 /**
  * Shared metadata for all 7 PII entity categories (labels, short tags, CSS class tokens, descriptions).
@@ -70,3 +71,31 @@ export const ENTITY_META = Object.freeze({
 });
 
 export const ENTITY_LIST = Object.values(ENTITY_META);
+
+/**
+ * Shared redaction mode definitions consumed by RedactionModeSelector and SettingsPage.
+ */
+export const REDACTION_MODE_OPTIONS = Object.freeze([
+  {
+    id: REDACTION_MODES.FULL,
+    title: 'Mode A: Full Mask',
+    shortLabel: 'Mode A: Full Mask ([REDACTED])',
+    description: 'Replaces every detected sensitive span with a uniform redaction token.',
+    example: '[REDACTED]',
+  },
+  {
+    id: REDACTION_MODES.PARTIAL,
+    title: 'Mode B: Partial Mask',
+    shortLabel: 'Mode B: Partial Mask (Last 4 / Domain)',
+    description:
+      'Masks identifying digits/prefixes while keeping minimal context (last 4 digits, domain).',
+    example: 'Aa***@demo.in',
+  },
+  {
+    id: REDACTION_MODES.PSEUDONYM,
+    title: 'Mode C: Consistent Pseudonymization',
+    shortLabel: 'Mode C: Consistent Pseudonymization (USER_01)',
+    description: 'Maps repeated identical entities to consistent session-only placeholders.',
+    example: 'USER_01',
+  },
+]);

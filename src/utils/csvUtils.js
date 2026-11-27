@@ -1,10 +1,11 @@
 import { detectAllPII } from '../engine/detectPII.js';
 import { createPseudonymSession, REDACTION_MODES, redactText } from '../engine/redactPII.js';
 
+const CSV_ESCAPE_TRIGGER_RE = /[",\r\n]/;
+
 /**
- * RFC-4180 compliant CSV parser supporting quoted fields, embedded commas,
- * escaped quotes (""), and CRLF/LF newlines inside quoted values.
- * Rejects malformed unclosed quotes cleanly with an error description.
+ * RFC-4180 compliant CSV parser using slice-buffered field chunks instead of char-by-char
+ * string concatenation, handling quoted fields, embedded commas, escaped quotes (""), and CRLF/LF.
  *
  * @param {string} text
  * @returns {{ ok: boolean, rows?: string[][], error?: string }}
@@ -19,9 +20,23 @@ export function parseCsv(text) {
 
   const rows = [];
   let currentRow = [];
-  let currentField = '';
+  let fieldChunks = [];
+  let sliceStart = 0;
   let inQuotes = false;
   let fieldStarted = false;
+
+  const flushField = (endIdx) => {
+    if (fieldChunks.length === 0) {
+      currentRow.push(text.slice(sliceStart, endIdx));
+    } else {
+      if (endIdx > sliceStart) {
+        fieldChunks.push(text.slice(sliceStart, endIdx));
+      }
+      currentRow.push(fieldChunks.join(''));
+      fieldChunks = [];
+    }
+    fieldStarted = false;
+  };
 
   for (let i = 0; i < text.length; i += 1) {
     const ch = text[i];
@@ -29,13 +44,14 @@ export function parseCsv(text) {
     if (inQuotes) {
       if (ch === '"') {
         if (text[i + 1] === '"') {
-          currentField += '"';
+          fieldChunks.push(text.slice(sliceStart, i + 1));
           i += 1;
+          sliceStart = i + 1;
         } else {
+          fieldChunks.push(text.slice(sliceStart, i));
           inQuotes = false;
+          sliceStart = i + 1;
         }
-      } else {
-        currentField += ch;
       }
       continue;
     }
@@ -49,21 +65,19 @@ export function parseCsv(text) {
       }
       inQuotes = true;
       fieldStarted = true;
+      sliceStart = i + 1;
     } else if (ch === ',') {
-      currentRow.push(currentField);
-      currentField = '';
-      fieldStarted = false;
+      flushField(i);
+      sliceStart = i + 1;
     } else if (ch === '\r' || ch === '\n') {
+      flushField(i);
+      rows.push(currentRow);
+      currentRow = [];
       if (ch === '\r' && text[i + 1] === '\n') {
         i += 1;
       }
-      currentRow.push(currentField);
-      rows.push(currentRow);
-      currentRow = [];
-      currentField = '';
-      fieldStarted = false;
+      sliceStart = i + 1;
     } else {
-      currentField += ch;
       fieldStarted = true;
     }
   }
@@ -75,9 +89,8 @@ export function parseCsv(text) {
     };
   }
 
-  // Push final row if non-empty or trailing comma present
-  if (fieldStarted || currentRow.length > 0 || currentField.length > 0) {
-    currentRow.push(currentField);
+  if (fieldStarted || currentRow.length > 0 || sliceStart < text.length) {
+    flushField(text.length);
     rows.push(currentRow);
   }
 
@@ -92,39 +105,26 @@ export function parseCsv(text) {
 export function serializeCsv(rows) {
   if (!Array.isArray(rows) || rows.length === 0) return '';
 
-  return rows
-    .map((row) =>
-      row
-        .map((cell) => {
-          const str = cell == null ? '' : String(cell);
-          if (/[",\r\n]/.test(str)) {
-            return `"${str.replace(/"/g, '""')}"`;
-          }
-          return str;
-        })
-        .join(',')
-    )
-    .join('\n');
+  const serializedRows = new Array(rows.length);
+  for (let r = 0; r < rows.length; r += 1) {
+    const row = rows[r];
+    const serializedCells = new Array(row.length);
+    for (let c = 0; c < row.length; c += 1) {
+      const cell = row[c];
+      const str = cell == null ? '' : String(cell);
+      serializedCells[c] = CSV_ESCAPE_TRIGGER_RE.test(str)
+        ? `"${str.replace(/"/g, '""')}"`
+        : str;
+    }
+    serializedRows[r] = serializedCells.join(',');
+  }
+  return serializedRows.join('\n');
 }
 
 /**
  * Runs PII detection and redaction cell-by-cell across a CSV document while preserving
  * row/column structure, quoted values, commas, and embedded newlines.
  * Shares a single in-memory pseudonym session across the entire CSV when in pseudonym mode.
- *
- * @param {string} csvText
- * @param {string[]} enabledTypes
- * @param {string} mode
- * @returns {{
- *   ok: boolean,
- *   error?: string,
- *   rows?: string[][],
- *   sanitizedRows?: string[][],
- *   sanitizedText?: string,
- *   totalDetections?: number,
- *   redactedCount?: number,
- *   categoryCounts?: Record<string, number>
- * }}
  */
 export function processCsvDocument(csvText, enabledTypes, mode) {
   const parsed = parseCsv(csvText);
@@ -139,31 +139,37 @@ export function processCsvDocument(csvText, enabledTypes, mode) {
   let redactedCount = 0;
   const categoryCounts = {};
 
-  const sanitizedRows = parsed.rows.map((row) =>
-    row.map((cell) => {
-      const detections = detectAllPII(cell, enabledTypes);
-      totalDetections += detections.length;
-      const result = redactText(cell, detections, mode, session);
-      redactedCount += result.redactedCount;
+  try {
+    const sanitizedRows = parsed.rows.map((row) =>
+      row.map((cell) => {
+        if (!cell) return '';
+        const detections = detectAllPII(cell, enabledTypes);
+        totalDetections += detections.length;
+        if (detections.length === 0) {
+          return cell;
+        }
+        const result = redactText(cell, detections, mode, session);
+        redactedCount += result.redactedCount;
 
-      for (const [type, count] of Object.entries(result.categoryCounts)) {
-        categoryCounts[type] = (categoryCounts[type] || 0) + count;
-      }
-      return result.sanitizedText;
-    })
-  );
+        for (const [type, count] of Object.entries(result.categoryCounts)) {
+          categoryCounts[type] = (categoryCounts[type] || 0) + count;
+        }
+        return result.sanitizedText;
+      })
+    );
 
-  if (session) {
-    session.clear();
+    return {
+      ok: true,
+      rows: parsed.rows,
+      sanitizedRows,
+      sanitizedText: serializeCsv(sanitizedRows),
+      totalDetections,
+      redactedCount,
+      categoryCounts,
+    };
+  } finally {
+    if (session) {
+      session.clear();
+    }
   }
-
-  return {
-    ok: true,
-    rows: parsed.rows,
-    sanitizedRows,
-    sanitizedText: serializeCsv(sanitizedRows),
-    totalDetections,
-    redactedCount,
-    categoryCounts,
-  };
 }

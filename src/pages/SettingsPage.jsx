@@ -8,8 +8,7 @@ import {
   Sun,
   Zap,
 } from 'lucide-react';
-import { ENTITY_LIST } from '../components/entityMeta.js';
-import { REDACTION_MODES } from '../engine/redactPII.js';
+import { ENTITY_LIST, REDACTION_MODE_OPTIONS } from '../components/entityMeta.js';
 import { DEFAULT_MAX_FILE_SIZE_BYTES, formatFileSize } from '../utils/fileUtils.js';
 
 export function SettingsPage({
@@ -131,14 +130,7 @@ export function SettingsPage({
           </h2>
 
           <div style={{ display: 'grid', gap: '0.55rem' }}>
-            {[
-              { id: REDACTION_MODES.FULL, label: 'Mode A: Full Mask ([REDACTED])' },
-              { id: REDACTION_MODES.PARTIAL, label: 'Mode B: Partial Mask (Last 4 / Domain)' },
-              {
-                id: REDACTION_MODES.PSEUDONYM,
-                label: 'Mode C: Consistent Pseudonymization (USER_01)',
-              },
-            ].map((opt) => {
+            {REDACTION_MODE_OPTIONS.map((opt) => {
               const selected = sanitizer.redactionMode === opt.id;
               return (
                 <button
@@ -154,7 +146,7 @@ export function SettingsPage({
                       color={selected ? 'var(--accent-cyan)' : 'var(--text-muted)'}
                       aria-hidden="true"
                     />
-                    <strong>{opt.label}</strong>
+                    <strong>{opt.shortLabel}</strong>
                   </div>
                 </button>
               );

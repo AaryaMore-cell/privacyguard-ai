@@ -1,3 +1,4 @@
+import { useEffect } from 'react';
 import { motion } from 'motion/react';
 import {
   Activity,
@@ -38,6 +39,17 @@ export function Sidebar({
     onCloseMobile();
   };
 
+  useEffect(() => {
+    if (!mobileOpen) return undefined;
+    const onKeyDown = (e) => {
+      if (e.key === 'Escape') {
+        onCloseMobile();
+      }
+    };
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, [mobileOpen, onCloseMobile]);
+
   return (
     <>
       {mobileOpen ? (
@@ -53,6 +65,8 @@ export function Sidebar({
           mobileOpen ? 'is-mobile-open' : ''
         }`}
         aria-label="Primary Sidebar"
+        role={mobileOpen ? 'dialog' : undefined}
+        aria-modal={mobileOpen ? 'true' : undefined}
         initial={false}
         animate={{ width: collapsed ? 82 : 258 }}
         transition={{ type: 'spring', stiffness: 260, damping: 28 }}

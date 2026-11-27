@@ -1,17 +1,36 @@
-import { useEffect } from 'react';
+import { useEffect, useRef } from 'react';
 import { AnimatePresence, motion } from 'motion/react';
 import { ShieldCheck, X } from 'lucide-react';
 
 export function HelpModal({ isOpen, onClose }) {
+  const closeBtnRef = useRef(null);
+  const previousFocusRef = useRef(null);
+
   useEffect(() => {
     if (!isOpen) return undefined;
+
+    previousFocusRef.current = document.activeElement;
+    const focusTimer = setTimeout(() => {
+      closeBtnRef.current?.focus();
+    }, 0);
+
     const handleKeyDown = (e) => {
       if (e.key === 'Escape') {
         onClose();
       }
     };
     window.addEventListener('keydown', handleKeyDown);
-    return () => window.removeEventListener('keydown', handleKeyDown);
+
+    return () => {
+      clearTimeout(focusTimer);
+      window.removeEventListener('keydown', handleKeyDown);
+      if (
+        previousFocusRef.current &&
+        typeof previousFocusRef.current.focus === 'function'
+      ) {
+        previousFocusRef.current.focus();
+      }
+    };
   }, [isOpen, onClose]);
 
   return (
@@ -43,6 +62,7 @@ export function HelpModal({ isOpen, onClose }) {
                 <span>PrivacyGuard AI — Quick Guide</span>
               </h2>
               <button
+                ref={closeBtnRef}
                 type="button"
                 className="icon-btn"
                 onClick={onClose}

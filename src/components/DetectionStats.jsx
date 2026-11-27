@@ -1,3 +1,4 @@
+import { memo } from 'react';
 import { motion } from 'motion/react';
 import { Activity, Clock, FileCode2, ShieldAlert, ShieldCheck } from 'lucide-react';
 import { AnimatedNumber } from './AnimatedNumber.jsx';
@@ -24,7 +25,7 @@ function buildDonutSegments(items, total) {
     });
 }
 
-export function DetectionStats({
+export const DetectionStats = memo(function DetectionStats({
   stats,
   enabledTypes,
   onToggleCategory,
@@ -273,4 +274,4 @@ export function DetectionStats({
       </div>
     </div>
   );
-}
+});

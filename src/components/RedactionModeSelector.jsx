@@ -1,29 +1,8 @@
+import { memo } from 'react';
 import { Filter, Sliders } from 'lucide-react';
-import { REDACTION_MODES } from '../engine/redactPII.js';
-import { ENTITY_LIST } from './entityMeta.js';
+import { ENTITY_LIST, REDACTION_MODE_OPTIONS } from './entityMeta.js';
 
-const MODE_OPTIONS = [
-  {
-    id: REDACTION_MODES.FULL,
-    title: 'Mode A: Full Mask',
-    description: 'Replaces every detected sensitive span with a uniform redaction token.',
-    example: '[REDACTED]',
-  },
-  {
-    id: REDACTION_MODES.PARTIAL,
-    title: 'Mode B: Partial Mask',
-    description: 'Masks identifying digits/prefixes while keeping minimal context (last 4 digits, domain).',
-    example: 'Aa***@demo.in',
-  },
-  {
-    id: REDACTION_MODES.PSEUDONYM,
-    title: 'Mode C: Consistent Pseudonymization',
-    description: 'Maps repeated identical entities to consistent session-only placeholders.',
-    example: 'USER_01',
-  },
-];
-
-export function RedactionModeSelector({
+export const RedactionModeSelector = memo(function RedactionModeSelector({
   mode,
   onChangeMode,
   enabledTypes,
@@ -44,7 +23,7 @@ export function RedactionModeSelector({
         </div>
 
         <div className="mode-list" role="group" aria-label="Redaction mode options">
-          {MODE_OPTIONS.map((opt) => {
+          {REDACTION_MODE_OPTIONS.map((opt) => {
             const isSelected = mode === opt.id;
             return (
               <button
@@ -110,4 +89,4 @@ export function RedactionModeSelector({
       </div>
     </div>
   );
-}
+});

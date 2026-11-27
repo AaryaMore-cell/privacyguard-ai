@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { memo, useEffect, useMemo, useRef, useState } from 'react';
 import { AnimatePresence, motion } from 'motion/react';
 import { Check, Copy, Download, RotateCcw, ShieldCheck } from 'lucide-react';
 import { ENTITY_LIST, ENTITY_META } from './entityMeta.js';
@@ -37,13 +37,18 @@ function renderHighlightedNodes(text, spans, isSanitized) {
 
     const meta = ENTITY_META[span.type];
     const markClass = isSanitized ? 'redacted-mark' : `pii-mark ${meta ? meta.className : ''}`;
-
+    const label = meta?.singular || span.type;
     const tooltip = isSanitized
-      ? `Sanitized ${meta?.singular || span.type}`
-      : `${meta?.singular || span.type}: ${span.explanation || span.validationStatus}`;
+      ? `Sanitized ${label}`
+      : `${label}: ${span.explanation || span.validationStatus || 'Detected'}`;
 
     nodes.push(
-      <mark key={`${start}-${end}-${idx}`} className={markClass} title={tooltip}>
+      <mark
+        key={`${start}-${end}-${idx}`}
+        className={markClass}
+        title={tooltip}
+        aria-label={isSanitized ? `Redacted ${label}` : `Detected ${label}`}
+      >
         {text.slice(start, end)}
       </mark>
     );
@@ -58,7 +63,7 @@ function renderHighlightedNodes(text, spans, isSanitized) {
   return nodes;
 }
 
-export function DiffViewer({
+export const DiffViewer = memo(function DiffViewer({
   inputText,
   sanitizedText,
   detections,
@@ -70,18 +75,42 @@ export function DiffViewer({
   onExportDocument,
 }) {
   const [copied, setCopied] = useState(false);
+  const copyTimerRef = useRef(null);
   const hasContent = inputText.length > 0;
+
+  useEffect(() => {
+    return () => {
+      if (copyTimerRef.current) {
+        clearTimeout(copyTimerRef.current);
+      }
+    };
+  }, []);
+
+  const originalNodes = useMemo(
+    () => renderHighlightedNodes(inputText, detections, false),
+    [inputText, detections]
+  );
+
+  const sanitizedNodes = useMemo(
+    () => renderHighlightedNodes(sanitizedText, outputSegments, true),
+    [sanitizedText, outputSegments]
+  );
 
   const handleCopyClick = async () => {
     const ok = await onCopy();
     if (ok) {
       setCopied(true);
-      setTimeout(() => setCopied(false), 1800);
+      if (copyTimerRef.current) clearTimeout(copyTimerRef.current);
+      copyTimerRef.current = setTimeout(() => setCopied(false), 1800);
     }
   };
 
   return (
     <section className="glass-card panel-card diff-shell" aria-labelledby="diff-viewer-title">
+      <span className="sr-only" aria-live="polite">
+        {copied ? 'Sanitized output copied to clipboard.' : ''}
+      </span>
+
       <AnimatePresence>
         {isScanning ? (
           <motion.div
@@ -181,7 +210,7 @@ export function DiffViewer({
               <span className="mono">{detections.length} detections</span>
             </div>
             <pre className="diff-content" data-testid="diff-original">
-              {renderHighlightedNodes(inputText, detections, false)}
+              {originalNodes}
             </pre>
           </div>
 
@@ -191,11 +220,11 @@ export function DiffViewer({
               <span className="mono">{sanitizedText.length.toLocaleString()} chars</span>
             </div>
             <pre className="diff-content" data-testid="diff-sanitized">
-              {renderHighlightedNodes(sanitizedText, outputSegments, true)}
+              {sanitizedNodes}
             </pre>
           </div>
         </div>
       )}
     </section>
   );
-}
+});
