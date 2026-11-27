@@ -59,6 +59,7 @@ export function App() {
           onOpenHelp={() => setHelpOpen(true)}
           onOpenMobileSidebar={() => setMobileSidebarOpen(true)}
           isOnline={isOnline}
+          processingEngine={sanitizer.processingEngine}
         />
 
         <div className="universe-workspace-frame">

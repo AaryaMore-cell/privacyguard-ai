@@ -16,7 +16,9 @@ export function Header({
   onOpenHelp,
   onOpenMobileSidebar,
   isOnline = true,
+  processingEngine = 'local',
 }) {
+  const isServer = processingEngine === 'server';
   return (
     <header className="site-header">
       <div className="header-inner">
@@ -49,10 +51,14 @@ export function Header({
         <div className="header-controls">
           <span
             className="privacy-status-pill"
-            title="Zero network calls for document processing. All detection and masking run inside your browser."
+            title={
+              isServer
+                ? 'Documents are sent to your configured FastAPI /api backend for ephemeral processing.'
+                : 'Zero network calls for document processing. All detection and masking run inside your browser.'
+            }
           >
             <span className="status-dot-live" aria-hidden="true" />
-            <span>Local Processing</span>
+            <span>{isServer ? 'FastAPI Server API' : 'Local Processing'}</span>
           </span>
 
           <span className="badge-pill offline-pill" title="Runs locally in browser RAM without external APIs">

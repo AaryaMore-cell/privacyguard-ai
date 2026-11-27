@@ -55,6 +55,34 @@ export function SettingsPage({
 
           <div className="setting-row">
             <div>
+              <strong>Processing Engine</strong>
+              <span>
+                Run locally in browser RAM (zero uploads) or route requests to the Python FastAPI{' '}
+                <code>/api</code> backend ({sanitizer.serverStatus}).
+              </span>
+            </div>
+            <div style={{ display: 'inline-flex', gap: '0.35rem' }}>
+              <button
+                type="button"
+                className={`btn btn-sm ${sanitizer.processingEngine === 'local' ? 'btn-primary' : 'btn-secondary'}`}
+                aria-pressed={sanitizer.processingEngine === 'local'}
+                onClick={() => sanitizer.setProcessingEngine('local')}
+              >
+                Browser RAM
+              </button>
+              <button
+                type="button"
+                className={`btn btn-sm ${sanitizer.processingEngine === 'server' ? 'btn-primary' : 'btn-secondary'}`}
+                aria-pressed={sanitizer.processingEngine === 'server'}
+                onClick={() => sanitizer.setProcessingEngine('server')}
+              >
+                FastAPI API
+              </button>
+            </div>
+          </div>
+
+          <div className="setting-row">
+            <div>
               <strong>Live Auto-Scan on Type</strong>
               <span>
                 When enabled, detections update on every keystroke. Turn off to scan only when

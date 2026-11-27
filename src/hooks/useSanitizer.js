@@ -5,6 +5,11 @@ import {
   REDACTION_MODES,
   redactText,
 } from '../engine/redactPII.js';
+import {
+  checkBackendHealth,
+  redactViaBackend,
+  uploadAndRedactViaBackend,
+} from '../utils/apiClient.js';
 import { processCsvDocument } from '../utils/csvUtils.js';
 import {
   buildExportFilename,
@@ -32,6 +37,26 @@ function createAuditEntry(event, status, details, extra = {}) {
   };
 }
 
+function mapServerResponse(data, emptyCounts) {
+  return {
+    detections: data.detections || [],
+    sanitizedText: data.sanitized_text || '',
+    outputSegments: data.output_spans || [],
+    csvWarnings: data.csv_warnings || [],
+    stats: {
+      totalDetected: data.total_detected ?? 0,
+      totalRedacted: data.total_redacted ?? 0,
+      byCategory: { ...emptyCounts, ...(data.category_counts || {}) },
+      processingTimeMs: data.processing_time_ms ?? 0,
+      inputChars: data.input_chars ?? 0,
+      outputChars: data.output_chars ?? 0,
+      lineCount: data.line_count ?? 0,
+      csvRows: data.csv_rows ?? 0,
+      csvCols: data.csv_cols ?? 0,
+    },
+  };
+}
+
 export function useSanitizer() {
   const [inputText, setInputText] = useState('');
   const [committedText, setCommittedText] = useState('');
@@ -42,6 +67,9 @@ export function useSanitizer() {
   const [fileMeta, setFileMeta] = useState(null);
   const [redactionMode, setRedactionModeState] = useState(REDACTION_MODES.PSEUDONYM);
   const [enabledTypes, setEnabledTypes] = useState(ALL_PII_TYPES);
+  const [processingEngine, setProcessingEngineState] = useState('local'); // 'local' | 'server'
+  const [serverStatus, setServerStatus] = useState('idle'); // 'idle' | 'checking' | 'online' | 'offline'
+  const [serverAnalysis, setServerAnalysis] = useState(null);
   const [errorMessage, setErrorMessage] = useState(null);
   const [statusMessage, setStatusMessage] = useState(null);
   const [processingTimeMs, setProcessingTimeMs] = useState(0);
@@ -81,6 +109,103 @@ export function useSanitizer() {
   const activeSourceText = autoScan ? inputText : committedText;
   const hasPendingManualScan = !autoScan && inputText !== committedText;
 
+  const checkServerHealth = useCallback(async () => {
+    setServerStatus('checking');
+    try {
+      const health = await checkBackendHealth();
+      setServerStatus('online');
+      return { ok: true, health };
+    } catch (err) {
+      setServerStatus('offline');
+      return {
+        ok: false,
+        error: err instanceof Error ? err.message : 'FastAPI backend is unreachable.',
+      };
+    }
+  }, []);
+
+  const setProcessingEngine = useCallback(
+    async (nextEngine) => {
+      const normalized = nextEngine === 'server' ? 'server' : 'local';
+      setErrorMessage(null);
+      setStatusMessage(null);
+      setProcessingEngineState(normalized);
+
+      if (normalized === 'local') {
+        setServerAnalysis(null);
+        setServerStatus('idle');
+        appendAudit(
+          'Processing Mode Changed',
+          'info',
+          'Switched to 100% Local Browser RAM processing (zero network calls)'
+        );
+        setStatusMessage('Switched to Local Browser Mode (100% offline-capable).');
+        return;
+      }
+
+      appendAudit(
+        'Processing Mode Changed',
+        'info',
+        'Switched to FastAPI Server API (/api/redact & /api/upload)'
+      );
+      const check = await checkServerHealth();
+      if (check.ok) {
+        setStatusMessage('Connected to PrivacyGuard FastAPI backend (/api).');
+      } else {
+        setErrorMessage(
+          `FastAPI backend unreachable (${check.error}). Start uvicorn or switch back to Local Browser mode.`
+        );
+      }
+    },
+    [appendAudit, checkServerHealth]
+  );
+
+  // Run FastAPI /api/redact automatically when Server API mode is active
+  useEffect(() => {
+    if (processingEngine !== 'server' || !activeSourceText) {
+      return undefined;
+    }
+
+    const controller = new AbortController();
+    const emptyCounts = Object.fromEntries(ALL_PII_TYPES.map((t) => [t, 0]));
+
+    Promise.resolve().then(() => {
+      if (!controller.signal.aborted) {
+        setIsScanning(true);
+      }
+    });
+
+    redactViaBackend({
+      text: activeSourceText,
+      mode: redactionMode,
+      enabledTypes,
+      format: documentFormat,
+      signal: controller.signal,
+    })
+      .then((data) => {
+        setServerStatus('online');
+        setServerAnalysis(mapServerResponse(data, emptyCounts));
+        setProcessingTimeMs(data.processing_time_ms ?? 0);
+        setErrorMessage(null);
+      })
+      .catch((err) => {
+        if (err?.name === 'AbortError') return;
+        setServerStatus('offline');
+        setErrorMessage(
+          err instanceof Error
+            ? `FastAPI server error: ${err.message}`
+            : 'Unable to reach FastAPI backend.'
+        );
+      })
+      .finally(() => {
+        if (!controller.signal.aborted) {
+          setIsScanning(false);
+        }
+      });
+
+    return () => controller.abort();
+  }, [processingEngine, activeSourceText, redactionMode, enabledTypes, documentFormat]);
+
   const measurePipelineMs = useCallback((text, format, types, mode) => {
     if (!text) return 0;
     const t0 = performance.now();
@@ -95,7 +220,7 @@ export function useSanitizer() {
     return Math.max(0.1, Number((performance.now() - t0).toFixed(2)));
   }, []);
 
-  const analysis = useMemo(() => {
+  const localAnalysis = useMemo(() => {
     const emptyCounts = Object.fromEntries(ALL_PII_TYPES.map((t) => [t, 0]));
     const inputMetrics = getTextMetrics(inputText);
 
@@ -194,59 +319,76 @@ export function useSanitizer() {
     };
   }, [activeSourceText, inputText, documentFormat, enabledTypes, redactionMode, processingTimeMs]);
 
+  const analysis =
+    processingEngine === 'server' && activeSourceText && serverAnalysis
+      ? serverAnalysis
+      : localAnalysis;
+
   const setDocumentFormat = useCallback(
     (nextFormat) => {
       const normalized = nextFormat === 'csv' ? 'csv' : 'txt';
       setDocumentFormatState(normalized);
-      setProcessingTimeMs(
-        measurePipelineMs(activeSourceText, normalized, enabledTypes, redactionMode)
+      if (processingEngine === 'local') {
+        setProcessingTimeMs(
+          measurePipelineMs(activeSourceText, normalized, enabledTypes, redactionMode)
+        );
+      }
+      appendAudit(
+        'Format Mode Changed',
+        'info',
+        `Switched parser format to ${normalized.toUpperCase()}`
       );
-      appendAudit('Format Mode Changed', 'info', `Switched parser format to ${normalized.toUpperCase()}`);
     },
-    [activeSourceText, appendAudit, enabledTypes, measurePipelineMs, redactionMode]
+    [activeSourceText, appendAudit, enabledTypes, measurePipelineMs, processingEngine, redactionMode]
   );
 
   const setRedactionMode = useCallback(
     (nextMode) => {
       setRedactionModeState(nextMode);
       setStatusMessage(null);
-      setProcessingTimeMs(
-        measurePipelineMs(activeSourceText, documentFormat, enabledTypes, nextMode)
-      );
+      if (processingEngine === 'local') {
+        setProcessingTimeMs(
+          measurePipelineMs(activeSourceText, documentFormat, enabledTypes, nextMode)
+        );
+      }
       appendAudit('Redaction Mode Changed', 'info', `Active redaction mode set to ${nextMode}`);
     },
-    [activeSourceText, appendAudit, documentFormat, enabledTypes, measurePipelineMs]
+    [activeSourceText, appendAudit, documentFormat, enabledTypes, measurePipelineMs, processingEngine]
   );
 
   const triggerScan = useCallback(() => {
     setErrorMessage(null);
     if (!inputText) {
       setCommittedText('');
+      setServerAnalysis(null);
       setProcessingTimeMs(0);
       return;
     }
     setCommittedText(inputText);
-    setProcessingTimeMs(measurePipelineMs(inputText, documentFormat, enabledTypes, redactionMode));
-    pulseScanAnimation();
-    const detections = detectAllPII(inputText, enabledTypes);
-    const matchedCats = [...new Set(detections.map((d) => d.type))];
-    appendAudit(
-      'Detection & Sanitization Completed',
-      'success',
-      `Scanned ${inputText.length} chars (${documentFormat.toUpperCase()}, mode: ${redactionMode}) — ${detections.length} entities matched`,
-      {
-        categories: matchedCats,
-        count: detections.length,
-        redactionStatus: 'Sanitized',
-      }
-    );
-    setStatusMessage(`Local scan complete: ${detections.length} sensitive entities processed.`);
+    if (processingEngine === 'local') {
+      setProcessingTimeMs(measurePipelineMs(inputText, documentFormat, enabledTypes, redactionMode));
+      pulseScanAnimation();
+      const detections = detectAllPII(inputText, enabledTypes);
+      const matchedCats = [...new Set(detections.map((d) => d.type))];
+      appendAudit(
+        'Detection & Sanitization Completed',
+        'success',
+        `Scanned ${inputText.length} chars (${documentFormat.toUpperCase()}, mode: ${redactionMode}) — ${detections.length} entities matched`,
+        {
+          categories: matchedCats,
+          count: detections.length,
+          redactionStatus: 'Sanitized',
+        }
+      );
+      setStatusMessage(`Local scan complete: ${detections.length} sensitive entities processed.`);
+    }
   }, [
     appendAudit,
     documentFormat,
     enabledTypes,
     inputText,
     measurePipelineMs,
+    processingEngine,
     pulseScanAnimation,
     redactionMode,
   ]);
@@ -258,30 +400,41 @@ export function useSanitizer() {
       setInputText(nextText);
       if (!nextText) {
         setCommittedText('');
+        setServerAnalysis(null);
         setFileMeta(null);
         setProcessingTimeMs(0);
         return;
       }
       if (autoScan) {
         setCommittedText(nextText);
-        setProcessingTimeMs(
-          measurePipelineMs(nextText, documentFormat, enabledTypes, redactionMode)
-        );
-        const detections = detectAllPII(nextText, enabledTypes);
-        const matchedCats = [...new Set(detections.map((d) => d.type))];
-        appendAudit(
-          'Detection & Sanitization Completed',
-          'success',
-          `Processed ${nextText.length} characters locally (${documentFormat.toUpperCase()}, mode: ${redactionMode})`,
-          {
-            categories: matchedCats,
-            count: detections.length,
-            redactionStatus: 'Sanitized',
-          }
-        );
+        if (processingEngine === 'local') {
+          setProcessingTimeMs(
+            measurePipelineMs(nextText, documentFormat, enabledTypes, redactionMode)
+          );
+          const detections = detectAllPII(nextText, enabledTypes);
+          const matchedCats = [...new Set(detections.map((d) => d.type))];
+          appendAudit(
+            'Detection & Sanitization Completed',
+            'success',
+            `Processed ${nextText.length} characters locally (${documentFormat.toUpperCase()}, mode: ${redactionMode})`,
+            {
+              categories: matchedCats,
+              count: detections.length,
+              redactionStatus: 'Sanitized',
+            }
+          );
+        }
       }
     },
-    [appendAudit, autoScan, documentFormat, enabledTypes, measurePipelineMs, redactionMode]
+    [
+      appendAudit,
+      autoScan,
+      documentFormat,
+      enabledTypes,
+      measurePipelineMs,
+      processingEngine,
+      redactionMode,
+    ]
   );
 
   const handleFileUpload = useCallback(
@@ -300,6 +453,41 @@ export function useSanitizer() {
       setDocumentFormatState(fmt);
       setInputText(res.content);
       setCommittedText(res.content);
+
+      if (processingEngine === 'server') {
+        try {
+          setIsScanning(true);
+          const emptyCounts = Object.fromEntries(ALL_PII_TYPES.map((t) => [t, 0]));
+          const serverData = await uploadAndRedactViaBackend({
+            file,
+            mode: redactionMode,
+            enabledTypes,
+          });
+          setServerStatus('online');
+          setServerAnalysis(mapServerResponse(serverData, emptyCounts));
+          setProcessingTimeMs(serverData.processing_time_ms ?? 0);
+          appendAudit(
+            'Document Uploaded to FastAPI',
+            'success',
+            `Processed ${fmt.toUpperCase()} (${file.size} bytes) via POST /api/upload`,
+            {
+              count: serverData.total_detected ?? 0,
+              redactionStatus: 'Sanitized',
+            }
+          );
+          setStatusMessage(`Processed "${file.name}" via FastAPI /api/upload.`);
+          return true;
+        } catch (err) {
+          setServerStatus('offline');
+          const msg = err instanceof Error ? err.message : 'FastAPI upload failed.';
+          setErrorMessage(msg);
+          appendAudit('Server Upload Failed', 'error', msg);
+          return false;
+        } finally {
+          setIsScanning(false);
+        }
+      }
+
       setProcessingTimeMs(measurePipelineMs(res.content, fmt, enabledTypes, redactionMode));
       pulseScanAnimation();
 
@@ -323,7 +511,14 @@ export function useSanitizer() {
       setStatusMessage(`Loaded "${file.name}" locally in browser memory.`);
       return true;
     },
-    [appendAudit, enabledTypes, measurePipelineMs, pulseScanAnimation, redactionMode]
+    [
+      appendAudit,
+      enabledTypes,
+      measurePipelineMs,
+      processingEngine,
+      pulseScanAnimation,
+      redactionMode,
+    ]
   );
 
   const loadSampleData = useCallback(
@@ -340,29 +535,44 @@ export function useSanitizer() {
       });
       setInputText(content);
       setCommittedText(content);
-      setProcessingTimeMs(measurePipelineMs(content, fmt, enabledTypes, redactionMode));
-      pulseScanAnimation();
 
-      const detections = detectAllPII(content, enabledTypes);
-      const matchedCats = [...new Set(detections.map((d) => d.type))];
-      appendAudit(
-        'Document Loaded',
-        'info',
-        `Loaded synthetic ${fmt.toUpperCase()} sample (${content.length} chars)`
-      );
-      appendAudit(
-        'Detection & Sanitization Completed',
-        'success',
-        `Sanitized synthetic ${fmt.toUpperCase()} sample locally (mode: ${redactionMode})`,
-        {
-          categories: matchedCats,
-          count: detections.length,
-          redactionStatus: 'Sanitized',
-        }
-      );
+      if (processingEngine === 'local') {
+        setProcessingTimeMs(measurePipelineMs(content, fmt, enabledTypes, redactionMode));
+        pulseScanAnimation();
+        const detections = detectAllPII(content, enabledTypes);
+        const matchedCats = [...new Set(detections.map((d) => d.type))];
+        appendAudit(
+          'Document Loaded',
+          'info',
+          `Loaded synthetic ${fmt.toUpperCase()} sample (${content.length} chars)`
+        );
+        appendAudit(
+          'Detection & Sanitization Completed',
+          'success',
+          `Sanitized synthetic ${fmt.toUpperCase()} sample locally (mode: ${redactionMode})`,
+          {
+            categories: matchedCats,
+            count: detections.length,
+            redactionStatus: 'Sanitized',
+          }
+        );
+      } else {
+        appendAudit(
+          'Sample Sent to FastAPI',
+          'info',
+          `Loaded synthetic ${fmt.toUpperCase()} sample for server sanitization`
+        );
+      }
       setStatusMessage(`Loaded synthetic ${fmt.toUpperCase()} sample fixture.`);
     },
-    [appendAudit, enabledTypes, measurePipelineMs, pulseScanAnimation, redactionMode]
+    [
+      appendAudit,
+      enabledTypes,
+      measurePipelineMs,
+      processingEngine,
+      pulseScanAnimation,
+      redactionMode,
+    ]
   );
 
   const toggleCategory = useCallback(
@@ -481,6 +691,7 @@ export function useSanitizer() {
   const handleReset = useCallback(() => {
     setInputText('');
     setCommittedText('');
+    setServerAnalysis(null);
     setIsScanning(false);
     setProcessingTimeMs(0);
     setDocumentFormatState('txt');
@@ -504,6 +715,10 @@ export function useSanitizer() {
     redactionMode,
     setRedactionMode,
     enabledTypes,
+    processingEngine,
+    setProcessingEngine,
+    serverStatus,
+    checkServerHealth,
     errorMessage,
     statusMessage,
     csvWarnings: analysis.csvWarnings,

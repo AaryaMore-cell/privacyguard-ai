@@ -28,11 +28,29 @@ export function Sanitizer({ sanitizer }) {
         </div>
 
         <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', flexWrap: 'wrap' }}>
+          <div style={{ display: 'inline-flex', alignItems: 'center', gap: '0.35rem' }} role="group" aria-label="Processing engine mode">
+            <button
+              type="button"
+              className={`btn btn-sm ${sanitizer.processingEngine === 'local' ? 'btn-primary' : 'btn-secondary'}`}
+              aria-pressed={sanitizer.processingEngine === 'local'}
+              onClick={() => sanitizer.setProcessingEngine('local')}
+            >
+              Browser RAM
+            </button>
+            <button
+              type="button"
+              className={`btn btn-sm ${sanitizer.processingEngine === 'server' ? 'btn-primary' : 'btn-secondary'}`}
+              aria-pressed={sanitizer.processingEngine === 'server'}
+              onClick={() => sanitizer.setProcessingEngine('server')}
+            >
+              FastAPI Server
+            </button>
+          </div>
           <span className={`badge-pill ${sanitizer.isScanning ? 'scan-pill-active' : ''}`}>
             <Radar size={14} aria-hidden="true" />
             <span>
               {sanitizer.isScanning
-                ? 'Scanning Browser Buffer...'
+                ? 'Scanning Buffer...'
                 : sanitizer.autoScan
                   ? 'Live Scan Active'
                   : 'Manual Scan Mode'}

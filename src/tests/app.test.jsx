@@ -208,4 +208,68 @@ describe('PrivacyGuard AI Dashboard & Interactive UI', () => {
     fireEvent.click(screen.getByRole('button', { name: /Scan Changes/i }));
     expect(screen.getByTestId('diff-sanitized').textContent).toContain('USER_01');
   });
+
+  it('switches to FastAPI Server mode and processes text via /api/redact', async () => {
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockImplementation(async (url) => {
+      if (String(url).includes('/api/health')) {
+        return new Response(JSON.stringify({ status: 'ok', persistent_storage: false }), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        });
+      }
+      return new Response(
+        JSON.stringify({
+          detections: [
+            {
+              type: 'EMAIL',
+              start: 8,
+              end: 21,
+              value: 'api@demo.org',
+              normalized: 'api@demo.org',
+              valid: true,
+              explanation: 'Matched standard email address pattern',
+            },
+          ],
+          sanitized_text: 'Contact USER_01',
+          output_spans: [
+            {
+              type: 'EMAIL',
+              originalStart: 8,
+              originalEnd: 21,
+              outputStart: 8,
+              outputEnd: 15,
+              replacement: 'USER_01',
+            },
+          ],
+          total_detected: 1,
+          total_redacted: 1,
+          category_counts: { EMAIL: 1 },
+          processing_time_ms: 0.8,
+          input_chars: 21,
+          output_chars: 15,
+          line_count: 1,
+          csv_rows: 0,
+          csv_cols: 0,
+          csv_warnings: [],
+        }),
+        { status: 200, headers: { 'Content-Type': 'application/json' } }
+      );
+    });
+
+    render(<App />);
+    fireEvent.click(screen.getByRole('button', { name: 'Sanitizer' }));
+    fireEvent.click(screen.getByRole('button', { name: 'FastAPI Server' }));
+
+    await waitFor(() => {
+      expect(screen.getByText('FastAPI Server API')).toBeInTheDocument();
+    });
+
+    const textarea = screen.getByLabelText(/Document Input/i);
+    fireEvent.change(textarea, { target: { value: 'Contact api@demo.org' } });
+
+    await waitFor(() => {
+      expect(screen.getByTestId('diff-sanitized').textContent).toContain('Contact USER_01');
+    });
+    expect(fetchSpy).toHaveBeenCalled();
+  });
 });
